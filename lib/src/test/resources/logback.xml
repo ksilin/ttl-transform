@@ -5,14 +5,14 @@
         <!-- see http://logback.qos.ch/manual/layouts.html#coloring -->
         <withJansi>true</withJansi>
         <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
-            <level>DEBUG</level>
+            <level>TRACE</level>
         </filter>
         <encoder>
             <pattern>[%date{"yyyy-MM-dd'T'HH:mm:ss,SSSXXX", UTC}] [%thread] %highlight[%-5level] [%logger] - %msg %n</pattern>
         </encoder>
     </appender>
 
-    <root level="DEBUG">
+    <root level="TRACE">
         <appender-ref ref="CONSOLE-LOGGER"/>
     </root>
 

@@ -21,29 +21,35 @@ public class TimestampAwareStoreCleaner<K, V> implements Transformer<K, V, KeyVa
     public TimestampAwareStoreCleaner(Duration punctuateInterval,
                                       BiPredicate<V, Long> deleteIfTrue,
                                       String storeName) {
-        this(punctuateInterval, deleteIfTrue, storeName, PunctuationType.WALL_CLOCK_TIME);
+        this(punctuateInterval, deleteIfTrue, storeName, PunctuationType.WALL_CLOCK_TIME, Long.MAX_VALUE);
     }
-
 
     public TimestampAwareStoreCleaner(Duration punctuateInterval,
                                       BiPredicate<V, Long> deleteIfTrue,
                                       String storeName,
-                                      PunctuationType punctuationType) {
+                                      PunctuationType punctuationType,
+                                      Long maxPunctuateMs) {
         this.punctuateInterval = punctuateInterval;
         this.deleteIfTrue = deleteIfTrue;
         this.storeName = storeName;
         this.punctuationType = punctuationType;
+        this.maxPunctuateMs = maxPunctuateMs;
     }
 
-    private Duration punctuateInterval;
+    private final Duration punctuateInterval;
     private BiPredicate<V, Long> deleteIfTrue;
     private String storeName;
-    private PunctuationType punctuationType;
+    private final PunctuationType punctuationType;
+
+    private Long maxPunctuateMs;
+
+    private K resumeKey = null;
 
     private ProcessorContext context;
     private KeyValueStore<K, V> store;
     private Cancellable cancellablePunctuator;
 
+    private final StoreCleanerStats stats = new StoreCleanerStats();
 
     @Override
     public void init(ProcessorContext context) {
@@ -66,24 +72,60 @@ public class TimestampAwareStoreCleaner<K, V> implements Transformer<K, V, KeyVa
 
     @Override
     public void close() {
-
     }
 
     public Cancellable getCancellablePunctuator() {
         return cancellablePunctuator;
     }
 
-    private final Punctuator punctuator = now -> {
-        log.debug("checking state store %s for records to remove at %d".formatted(storeName, now));
+    private final Punctuator punctuator = punctuateStartTime -> {
+        log.debug("checking state store %s for records to remove at %d".formatted(storeName, punctuateStartTime));
         try (final KeyValueIterator<K, V> all = store.all()) {
+
+            int processed = 0;
+            int evicted = 0;
+            int skipped = 0;
+            boolean aborted = false;
+
+            // rewind to resumeKey if required
+            // if resume key was deleted in the meantime, we skip this iteration
+            while (resumeKey != null && all.hasNext() && all.peekNextKey() != resumeKey) {
+                log.trace("skipping record with key %s, trying to advance to resumeKey %s".formatted(all.peekNextKey(), resumeKey));
+                all.next();
+                skipped = skipped + 1;
+            }
+            resumeKey = null;
+
             while (all.hasNext()) {
                 final KeyValue<K, V> record = all.next();
-                boolean shouldDelete = deleteIfTrue.test(record.value, now);
+
+                long elapsedPunctuationTime = context.currentSystemTimeMs() - punctuateStartTime;
+                log.trace("elapsed time: %d, maxTime: %d".formatted(elapsedPunctuationTime, maxPunctuateMs));
+                if (elapsedPunctuationTime > this.maxPunctuateMs) {
+                    resumeKey = record.key;
+                    aborted = true;
+                    stats.incrementAbortedTotal();
+                    log.debug("elapsed %d ms for punctuation of store %s, which is more than the allowed %d ms. Aborting this iteration and memorizing key %s to resume with".formatted(elapsedPunctuationTime, storeName, maxPunctuateMs, resumeKey));
+                    break;
+                }
+
+                boolean shouldDelete = deleteIfTrue.test(record.value, punctuateStartTime);
                 if (shouldDelete) {
                     log.debug("removing value for key %s from store %s".formatted(record.key, storeName));
                     store.delete(record.key);
+                    evicted = evicted + 1;
                 }
+                processed = processed + 1;
             }
+            // always reset the resumeKey if fully iterated
+            if (!aborted) resumeKey = null;
+            stats.incrementEvictedTotal(evicted);
+            stats.incrementProcessedTotal(processed);
+            stats.incrementSkippedTotal(skipped);
         }
     };
+
+    public StoreCleanerStats getStats() {
+        return stats;
+    }
 }
