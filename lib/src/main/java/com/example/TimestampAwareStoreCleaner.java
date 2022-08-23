@@ -53,10 +53,10 @@ public class TimestampAwareStoreCleaner<K, V> implements Transformer<K, V, KeyVa
 
     @Override
     public void init(ProcessorContext context) {
-        log.debug("initializing %s with context %s".formatted(getClass().getSimpleName(), context));
+        log.debug("initializing {} with context {}.{}", getClass().getSimpleName(), context.applicationId(), context.taskId());
         this.context = context;
         store = this.context.getStateStore(storeName);
-        log.debug("%s retrieved store %s".formatted(getClass().getSimpleName(), store));
+        log.debug("{} retrieved store {}", getClass().getSimpleName(), store);
 
         cancellablePunctuator = context.schedule(
                 punctuateInterval,
@@ -79,7 +79,7 @@ public class TimestampAwareStoreCleaner<K, V> implements Transformer<K, V, KeyVa
     }
 
     private final Punctuator punctuator = punctuateStartTime -> {
-        log.debug("checking state store %s for records to remove at %d".formatted(storeName, punctuateStartTime));
+        log.debug("checking state store {} for records to remove at {}", storeName, punctuateStartTime);
         try (final KeyValueIterator<K, V> all = store.all()) {
 
             int processed = 0;
@@ -90,7 +90,7 @@ public class TimestampAwareStoreCleaner<K, V> implements Transformer<K, V, KeyVa
             // rewind to resumeKey if required
             // if resume key was deleted in the meantime, we skip this iteration
             while (resumeKey != null && all.hasNext() && all.peekNextKey() != resumeKey) {
-                log.trace("skipping record with key %s, trying to advance to resumeKey %s".formatted(all.peekNextKey(), resumeKey));
+                log.trace("skipping record with key {}, trying to advance to resumeKey {}", all.peekNextKey(), resumeKey);
                 all.next();
                 skipped = skipped + 1;
             }
@@ -100,18 +100,18 @@ public class TimestampAwareStoreCleaner<K, V> implements Transformer<K, V, KeyVa
                 final KeyValue<K, V> record = all.next();
 
                 long elapsedPunctuationTime = context.currentSystemTimeMs() - punctuateStartTime;
-                log.trace("elapsed time: %d, maxTime: %d".formatted(elapsedPunctuationTime, maxPunctuateMs));
+                log.trace("elapsed time: {}, maxTime: {}", elapsedPunctuationTime, maxPunctuateMs);
                 if (elapsedPunctuationTime > this.maxPunctuateMs) {
                     resumeKey = record.key;
                     aborted = true;
                     stats.incrementAbortedTotal();
-                    log.debug("elapsed %d ms for punctuation of store %s, which is more than the allowed %d ms. Aborting this iteration and memorizing key %s to resume with".formatted(elapsedPunctuationTime, storeName, maxPunctuateMs, resumeKey));
+                    log.debug("elapsed {} ms for punctuation of store {}, which is more than the allowed {} ms. Aborting this iteration and memorizing key {} to resume with", elapsedPunctuationTime, storeName, maxPunctuateMs, resumeKey);
                     break;
                 }
 
                 boolean shouldDelete = deleteIfTrue.test(record.value, punctuateStartTime);
                 if (shouldDelete) {
-                    log.debug("removing value for key %s from store %s".formatted(record.key, storeName));
+                    log.debug("removing value for key {} from store {}", record.key, storeName);
                     store.delete(record.key);
                     evicted = evicted + 1;
                 }
